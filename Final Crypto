@@ -1,0 +1,213 @@
+import os
+import json
+import base64
+import time
+import numpy as np
+from PIL import Image
+from datetime import datetime
+from hashlib import sha256
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
+from cryptography.hazmat.backends import default_backend
+
+# === Key Generators ===
+def generate_keys():
+    ecc_priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    ecc_pub = ecc_priv.public_key()
+    rsa_priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    rsa_pub = rsa_priv.public_key()
+    return ecc_priv, ecc_pub, rsa_priv, rsa_pub
+
+# === SHA-256 Hash ===
+def compute_hash(data_bytes):
+    return sha256(data_bytes).digest()
+
+# === ECC Digital Signature ===
+def sign_data(data_hash, ecc_priv):
+    return ecc_priv.sign(data_hash, ec.ECDSA(hashes.SHA256()))
+
+def verify_signature(data_hash, signature, ecc_pub):
+    try:
+        ecc_pub.verify(signature, data_hash, ec.ECDSA(hashes.SHA256()))
+        return True
+    except:
+        return False
+
+# === AES-GCM ===
+def aes_gcm_encrypt(plaintext, key):
+    nonce = os.urandom(12)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+    return nonce, ciphertext
+
+def aes_gcm_decrypt(nonce, ciphertext, key):
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ciphertext, None).decode(errors='ignore')
+
+# === RSA Encryption of AES Key ===
+def rsa_encrypt_key(aes_key, rsa_pub):
+    return rsa_pub.encrypt(aes_key, padding.OAEP(
+        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+        algorithm=hashes.SHA256(), label=None))
+
+def rsa_decrypt_key(enc_key, rsa_priv):
+    return rsa_priv.decrypt(enc_key, padding.OAEP(
+        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+        algorithm=hashes.SHA256(), label=None))
+
+# === Simulated GPS Data ===
+def get_gps_data():
+    gps_data = {
+        "latitude": "13.1718",
+        "longitude": "77.5362",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    print(f"[*] Live GPS Data: {gps_data}")
+    return gps_data
+
+# === Steganography ===
+def embed_data_in_image(data_b64, image_name="output.png", width=500, height=500):
+    bits = ''.join(format(byte, '08b') for byte in data_b64.encode())
+    img_data = np.random.randint(0, 256, (height, width, 3), dtype=np.uint8)
+    flat = img_data.flatten()
+
+    if len(bits) > len(flat):
+        raise ValueError("Data size exceeds image capacity. Increase image dimensions.")
+
+    for i in range(len(bits)):
+        bit = int(bits[i])
+        flat[i] = (flat[i] & 0xFE) | bit
+        if flat[i] < 0 or flat[i] > 255:
+            flat[i] = 255
+
+    stego_img = flat.reshape((height, width, 3))
+    Image.fromarray(stego_img).save(image_name)
+    return image_name
+
+def extract_data_from_image(image_path, approx_len=2048):
+    img = np.array(Image.open(image_path))
+    flat = img.flatten()
+    bits = [str(flat[i] & 1) for i in range(approx_len * 8)]
+    byte_data = [int(''.join(bits[i:i+8]), 2) for i in range(0, len(bits), 8)]
+    return bytes(byte_data)
+
+# === Simulated Blockchain Logging ===
+def log_to_blockchain(entry: dict, log_file='blockchain_log.txt'):
+    timestamp = time.time()
+    entry_hash = sha256(json.dumps(entry).encode()).hexdigest()
+    with open(log_file, 'a') as f:
+        f.write(json.dumps({"timestamp": timestamp, "hash": entry_hash}) + '\n')
+    print(f"[Blockchain] Logged with hash: {entry_hash}")
+
+# === ENCRYPTION PIPELINE ===
+def encrypt_and_embed():
+    print("[*] Generating keys...")
+    ecc_priv, ecc_pub, rsa_priv, rsa_pub = generate_keys()
+
+    gps = get_gps_data()
+    gps_json = json.dumps(gps).encode()
+    digest = compute_hash(gps_json)
+    signature = sign_data(digest, ecc_priv)
+
+    bundle = {
+        "gps": gps,
+        "signature": base64.b64encode(signature).decode()
+    }
+
+    print("[*] Encrypting data...")
+    aes_key = AESGCM.generate_key(128)
+    payload = json.dumps(bundle)
+
+    start_encrypt_time = time.time()
+    nonce, ciphertext = aes_gcm_encrypt(payload, aes_key)
+    enc_key = rsa_encrypt_key(aes_key, rsa_pub)
+    encrypt_time_taken = time.time() - start_encrypt_time
+
+    print("\n[*] Encrypted Data:")
+    print(f"Ciphertext: {base64.b64encode(ciphertext).decode()}")
+    print(f"Nonce: {base64.b64encode(nonce).decode()}")
+    print(f"Encrypted AES Key (RSA): {base64.b64encode(enc_key).decode()}")
+
+    package = {
+        "nonce": base64.b64encode(nonce).decode(),
+        "ciphertext": base64.b64encode(ciphertext).decode(),
+        "enc_key": base64.b64encode(enc_key).decode()
+    }
+
+    final_b64 = base64.b64encode(json.dumps(package).encode()).decode()
+    print("[*] Embedding into image...")
+    img_path = embed_data_in_image(final_b64)
+
+    log_to_blockchain({
+        "timestamp": gps["timestamp"],
+        "location": gps["latitude"] + "," + gps["longitude"],
+        "img": img_path,
+        "sig_hash": sha256(signature).hexdigest()
+    })
+
+    print("\n[+] Keys and Metadata:")
+    print(f"ECC Private Key: {ecc_priv.private_numbers()}")
+    print(f"ECC Public Key: {ecc_pub.public_numbers()}")
+    print(f"RSA Private Key: {rsa_priv.private_numbers()}")
+    print(f"RSA Public Key: {rsa_pub.public_numbers()}")
+    print(f"Image Metadata (File Path): {img_path}")
+    print(f"Time taken to encrypt: {encrypt_time_taken:.4f} seconds")
+
+    # Demo output - show image and path
+    print(f"\n[\u2714] Image saved at: {img_path}")
+    try:
+        Image.open(img_path).show()
+    except Exception as e:
+        print(f"[!] Image display failed: {e}")
+
+    return img_path, rsa_priv, ecc_pub, encrypt_time_taken
+
+# === DECRYPTION PIPELINE ===
+def extract_and_decrypt(img_path, rsa_priv, ecc_pub, encrypt_time_taken):
+    print("[*] Extracting from image...")
+    start_decrypt_time = time.time()
+
+    # Extract binary data from image
+    b64_payload = extract_data_from_image(img_path)
+
+    # Decode base64 to get the JSON package
+    package = json.loads(base64.b64decode(b64_payload).decode('utf-8', errors='ignore'))
+
+    # Decode the individual components of the package (nonce, ciphertext, encrypted AES key)
+    nonce = base64.b64decode(package["nonce"])
+    ciphertext = base64.b64decode(package["ciphertext"])
+    enc_key = base64.b64decode(package["enc_key"])
+
+    # Decrypt the AES key using RSA private key
+    aes_key = rsa_decrypt_key(enc_key, rsa_priv)
+
+    # Decrypt the ciphertext using AES-GCM
+    plain_json = aes_gcm_decrypt(nonce, ciphertext, aes_key)
+
+    # Assuming the decrypted result is a valid JSON string, parse it
+    data = json.loads(plain_json)
+
+    # Process GPS data and the received signature
+    gps_data = json.dumps(data["gps"]).encode()
+    received_sig = base64.b64decode(data["signature"])
+
+    # Verify the integrity of the GPS data using the computed hash
+    hash_check = compute_hash(gps_data)
+
+    decrypt_time_taken = time.time() - start_decrypt_time
+
+    print("\n[+] Decryption Success!")
+    print("Position Data:", data["gps"])
+    print("Signature Valid:", verify_signature(hash_check, received_sig, ecc_pub))
+    print(f"Time taken to decrypt: {decrypt_time_taken:.4f} seconds")
+    print(f"Total Encryption and Decryption Time: {encrypt_time_taken + decrypt_time_taken:.4f} seconds")
+
+    # Display decrypted text
+    print("\nDecrypted Payload (GPS Data and Signature):")
+    print(json.dumps(data, indent=4))
+
+# === RUN ===
+if __name__ == "__main__":
+    img, rsa_key, ecc_key, encrypt_time_taken = encrypt_and_embed()
+    extract_and_decrypt(img, rsa_key, ecc_key, encrypt_time_taken)

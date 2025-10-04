@@ -1,0 +1,94 @@
+from heartbeat import *
+from onewire_temp import *
+import RPi.GPIO as GPIO
+import time
+import urllib.request
+import requests
+import threading
+import json
+import telepot
+import serial
+
+# Setup Telegram Bot
+bot = telepot.Bot('7267166324:AAH3HvQF4Lz_AGDdRoAw4W4vK531DTvB1r4')
+
+# GPIO Setup
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+switch = 26
+buzzer = 21
+GPIO.setup(switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(buzzer, GPIO.OUT)
+GPIO.output(buzzer, False)
+
+# Get live GPS coordinates from NEO-6M
+def get_gps_coordinates():
+    try:
+        gps = serial.Serial("/dev/ttyAMA0", baudrate=9600, timeout=1)
+        while True:
+            line = gps.readline().decode('ascii', errors='replace')
+            if line.startswith('$GPGGA'):
+                parts = line.split(',')
+                if parts[2] and parts[4]:
+                    lat_raw = float(parts[2])
+                    lon_raw = float(parts[4])
+                    lat_dir = parts[3]
+                    lon_dir = parts[5]
+
+                    lat = int(lat_raw / 100) + (lat_raw % 100) / 60.0
+                    lon = int(lon_raw / 100) + (lon_raw % 100) / 60.0
+                    if lat_dir == 'S': lat = -lat
+                    if lon_dir == 'W': lon = -lon
+                    return round(lat, 6), round(lon, 6)
+    except Exception as e:
+        print("GPS Error:", e)
+    return 0.0, 0.0  # fallback if GPS fails
+
+# Main Loop
+status = 'Normal'
+while True:
+    setHeartRate()
+    heartbeat_val = HEART_BEAT()
+    print("Heartbeat:", heartbeat_val)
+
+    if GPIO.input(switch) == False:
+        print("Emergency....")
+        GPIO.output(buzzer, True)
+        time.sleep(1)
+        GPIO.output(buzzer, False)
+        status = 'Emergency'
+        bot.sendMessage('6786910686', 'Emergency')
+    else:
+        status = 'Normal'
+
+    temp_c, temp_f = read_temp()
+    print('Temperature:', temp_c, 'C')
+
+    lat, lng = get_gps_coordinates()
+    print(f"GPS: Lat {lat}, Long {lng}")
+
+    url = "http://192.168.1.2:5000/update"  # Your backend server
+    data = {
+        "heartbeat": str(heartbeat_val),
+        "temperature": str(int(temp_c)),
+        "lat": str(lat),
+        "lng": str(lng),
+        'name': 'Sam',
+        'bg': 'B+',
+        'dob': '12/3/2020',
+        'gender': 'Male',
+        'age': '8',
+        'contact': '9876543212',
+        'address': 'Ramamurthy Nagar',
+        'status': status
+    }
+
+    try:
+        response = requests.post(url, json=data)
+        print(f"Notification sent. Status code: {response.status_code}")
+        print("Response:", response.json())
+    except Exception as e:
+        print(f"Error sending notification: {e}")
+    
+    time.sleep(15)  # Wait to avoid server overload
+

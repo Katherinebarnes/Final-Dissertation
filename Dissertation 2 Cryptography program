@@ -1,0 +1,156 @@
+import time
+import os
+import numpy as np
+import base64
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from PIL import Image
+
+# Padding for AES encryption
+def pad(data, block_size=16):
+    padding = block_size - len(data) % block_size
+    return data + bytes([padding] * padding)
+
+def unpad(data):
+    padding = data[-1]
+    return data[:-padding]
+
+# AES-GCM Encryption
+def encrypt_gcm(data, key):
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(data)
+    return cipher.nonce + tag + ciphertext  # Concatenate nonce, tag, and ciphertext
+
+# AES-GCM Decryption
+def decrypt_gcm(encrypted_data, key):
+    nonce = encrypted_data[:16]
+    tag = encrypted_data[16:32]
+    ciphertext = encrypted_data[32:]
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ciphertext, tag)
+
+# Generate Random Cover Image
+def generate_random_image(image_path, width=512, height=512):
+    random_pixels = np.random.randint(0, 256, (height, width, 3), dtype=np.uint8)
+    img = Image.fromarray(random_pixels)
+    img.save(image_path)
+    return image_path
+
+# Embed Data into Image using LSB
+def embed_data_in_image(image_path, data, output_path):
+    img = Image.open(image_path).convert('RGB')
+    img_data = np.array(img).flatten()
+
+    data_length = len(data)
+    metadata = data_length.to_bytes(4, 'big')
+    combined_data = metadata + data
+
+    if len(combined_data) * 8 > len(img_data):
+        raise ValueError("Data too large to embed in the image.")
+
+    for i in range(len(combined_data)):
+        byte = combined_data[i]
+        for bit_pos in range(8):
+            bit = (byte >> (7 - bit_pos)) & 1
+            img_data[i * 8 + bit_pos] = (img_data[i * 8 + bit_pos] & 0xFE) | bit
+
+    new_img_data = img_data.reshape(np.array(img).shape)
+    Image.fromarray(new_img_data.astype('uint8')).save(output_path)
+
+# Extract Data from Image
+def extract_data_from_image(image_path):
+    img = Image.open(image_path)
+    img_data = np.array(img).flatten()
+
+    metadata_bits = [img_data[i] & 1 for i in range(32)]
+    metadata_bytes = bytearray()
+    for i in range(0, 32, 8):
+        byte = 0
+        for bit in metadata_bits[i:i+8]:
+            byte = (byte << 1) | bit
+        metadata_bytes.append(byte)
+
+    data_length = int.from_bytes(metadata_bytes, 'big')
+
+    data_bits = [img_data[i] & 1 for i in range(32, 32 + data_length * 8)]
+    data = bytearray()
+    for i in range(0, len(data_bits), 8):
+        byte = 0
+        for bit in data_bits[i:i+8]:
+            byte = (byte << 1) | bit
+        data.append(byte)
+
+    return bytes(data)
+
+# Main Execution
+while True:
+    choice = input("Do you want to (E)ncrypt or (D)ecrypt? ").lower()
+
+    if choice == 'e':
+        input_text = input("Enter the text to hide: ").encode()
+        cover_image_path = "random_cover.png"
+        output_image_path = "output_image.png"
+        
+        # Generate random image
+        generate_random_image(cover_image_path)
+
+        # Generate random 128-bit AES key
+        key = get_random_bytes(16)
+        key_encoded = base64.b64encode(key).decode()
+        print(f"Generated Key (Save this securely!): {key_encoded}")
+
+        # Payload = Timestamp + Separator + Message
+        timestamp = str(int(time.time())).encode()
+        full_payload = timestamp + b"||" + input_text
+
+        # Measure encryption time
+        start_time = time.time()
+        encrypted_data = encrypt_gcm(full_payload, key)
+        encryption_time = time.time() - start_time
+        print(f"Encryption Time: {encryption_time:.6f} seconds")
+
+        # Embed encrypted data into image
+        embed_data_in_image(cover_image_path, encrypted_data, output_image_path)
+        print(f"Encrypted data embedded into: {output_image_path}")
+
+        # File Size Analysis
+        encrypted_data_size = len(encrypted_data)
+        stego_image_size = os.path.getsize(output_image_path)
+        print(f"Encrypted Data Size: {encrypted_data_size} bytes")
+        print(f"Stego Image Size: {stego_image_size / 1024:.2f} KB")
+
+    elif choice == 'd':
+        key_input = input("Enter the decryption key: ")
+
+        try:
+            key = base64.b64decode(key_input)
+            if len(key) != 16:
+                raise ValueError("Invalid key length.")
+        except Exception as e:
+            print(f"Error decoding key: {e}")
+            continue
+
+        try:
+            # Measure decryption time
+            start_time = time.time()
+            extracted_data = extract_data_from_image("output_image.png")
+            decrypted = decrypt_gcm(extracted_data, key)
+            decryption_time = time.time() - start_time
+            print(f"Decryption Time: {decryption_time:.6f} seconds")
+
+            timestamp, message = decrypted.split(b"||", 1)
+            print(f"Decrypted message: {message.decode()}")
+            print(f"Timestamp: {timestamp.decode()}")
+
+            # File Size Analysis
+            extracted_data_size = len(extracted_data)
+            stego_image_size = os.path.getsize("output_image.png")
+            print(f"Extracted Data Size: {extracted_data_size} bytes")
+            print(f"Stego Image Size: {stego_image_size / 1024:.2f} KB")
+
+        except Exception as e:
+            print(f"Decryption failed: {e}")
+
+    else:
+        print("Invalid choice! Please enter 'E' for Encrypt or 'D' for Decrypt.")

@@ -1,0 +1,62 @@
+import time
+import urllib.request
+from geopy.distance import geodesic
+from onewire_temp import *
+import RPi.GPIO as GPIO
+
+# ThingSpeak Setup
+API_KEY = 'E0T139HPHL0UR2SI'  # Replace with your ThingSpeak API Key
+BASE_URL = 'https://api.thingspeak.com/update?api_key=' + API_KEY
+
+# GPIO Setup
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+switch = 26
+buzzer = 21
+GPIO.setup(switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(buzzer, GPIO.OUT)
+
+# Geofencing Reference
+SAFE_CENTER = (13.1391, 77.6200)  # Presidency University
+SAFE_RADIUS_KM = 2.0  # 2 km radius
+
+# Geofencing Check
+def is_within_safe_zone(lat, lon, center=SAFE_CENTER, radius_km=SAFE_RADIUS_KM):
+    return geodesic((lat, lon), center).km <= radius_km
+
+# ThingSpeak Upload Function
+def upload_to_thingspeak(heartbeat, temp_c, lat, lon, anomaly_flag):
+    try:
+        url = f"{BASE_URL}&field1={heartbeat}&field2={temp_c}&field3={lat}&field4={lon}&field5={anomaly_flag}"
+        response = urllib.request.urlopen(url)
+        print("Data uploaded to ThingSpeak.")
+    except Exception as e:
+        print("Upload error:", e)
+
+# Main Loop
+if __name__ == '__main__':
+    while True:
+        setHeartRate()
+        heartbeat_val = HEART_BEAT()
+        print("Heartbeat:", heartbeat_val)
+
+        if not GPIO.input(switch):
+            print("Emergency button pressed!")
+            GPIO.output(buzzer, True)
+            time.sleep(1)
+            GPIO.output(buzzer, False)
+
+        temp_c, _ = read_temp()
+        print("Temperature (C):", temp_c)
+
+        # Simulated GPS — replace with real GPS reading
+        latitude = 13.1400
+        longitude = 77.6220
+
+        in_safe_zone = is_within_safe_zone(latitude, longitude)
+        anomaly_flag = 0 if in_safe_zone else 1  # 1 = anomaly, 0 = normal
+        print("In Safe Zone:", in_safe_zone)
+
+        upload_to_thingspeak(heartbeat_val, temp_c, latitude, longitude, anomaly_flag)
+
+        time.sleep(15)  # Minimum 15 sec interval for ThingSpeak Free Tier
