@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # === CONFIGURATION ===
 class Config:
     
-    THINGSPEAK_API_KEY = "SV4AK7EZDB2HKSCZ"  # Replace with your actual key
-    PRESIDENCY_UNIV_COORDS = (13.1310, 77.5650)  # Example coordinates
+    THINGSPEAK_API_KEY = "<>"  # Replace with your actual key
+    PRESIDENCY_UNIV_COORDS = (longitude, latitude)  # Example coordinates
     ANOMALY_RADIUS_KM = 2.0
     GPS_PORT = "/dev/serial0"  # Common RPi GPS port
     GPS_BAUDRATE = 9600
