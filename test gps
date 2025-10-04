@@ -1,7 +1,7 @@
 from geopy.distance import geodesic
 
-SAFE_ZONE_CENTER = (13.1391, 77.6200)
-test_location = (13.1395, 77.6202)
+SAFE_ZONE_CENTER = (latitude, longitude) # SAFE ZONE 
+test_location = (latitude, longitude)
 
 distance = geodesic(test_location, SAFE_ZONE_CENTER).km
 print(f"Distance: {distance:.2f} km")
