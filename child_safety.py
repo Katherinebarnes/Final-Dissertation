@@ -9,7 +9,7 @@ import json
 import time
 import requests
 import telepot
-bot = telepot.Bot('7267166324:AAH3HvQF4Lz_AGDdRoAw4W4vK531DTvB1r4')
+bot = telepot.Bot('<>') # telegram bot
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
@@ -37,12 +37,12 @@ while True:
     temp_c, temp_f =  read_temp()
     print('Temperature ',temp_c, 'C')
 
-    url = "http://192.168.1.2:5000/update"  # Your backend server URL
+    url = " "  # Your backend server URL
     data = {
         "heartbeat": str(heartbeat_val),  # Bin classification as "Recyclable" or "Less Recyclable"
         "temperature": str(int(temp_c)),  # Example fill level, you can update it dynamically based on sensor data
-        "lat": '13.172226030756097',
-        "lng": '77.53629385304806t',
+        "lat": '< >',
+        "lng": '<>',
         'name': 'Sam',
         'last_name': 'Wilson',
         'bg': 'B+',
@@ -50,7 +50,7 @@ while True:
         'gender': 'Male',
         'age': '8',
         'contact': '9876543212',
-        'address': 'Ramamurthy Nagar',
+        'address': 'UK',
         'disability': 'None',
         'status': status
         }
