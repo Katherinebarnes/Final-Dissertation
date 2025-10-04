@@ -10,7 +10,7 @@ import telepot
 import serial
 
 # Setup Telegram Bot
-bot = telepot.Bot('7267166324:AAH3HvQF4Lz_AGDdRoAw4W4vK531DTvB1r4')
+bot = telepot.Bot('<>') #telegram bot
 
 # GPIO Setup
 GPIO.setwarnings(False)
@@ -79,7 +79,7 @@ while True:
         'gender': 'Male',
         'age': '8',
         'contact': '9876543212',
-        'address': 'Ramamurthy Nagar',
+        'address': 'UK',
         'status': status
     }
 
