@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+import os
+import json
+import base64
+import time
+import requests
+import numpy as np
+from PIL import Image
+from datetime import datetime
+from hashlib import sha256
+import serial
+import pynmea2
+from geopy.distance import geodesic
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
+from cryptography.hazmat.backends import default_backend
+import re
+import logging
+
+# === SETUP LOGGING ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('security_system.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# === CONFIGURATION ===
+class Config:
+    
+    THINGSPEAK_API_KEY = "SV4AK7EZDB2HKSCZ"  # Replace with your actual key
+    PRESIDENCY_UNIV_COORDS = (13.1310, 77.5650)  # Example coordinates
+    ANOMALY_RADIUS_KM = 2.0
+    GPS_PORT = "/dev/serial0"  # Common RPi GPS port
+    GPS_BAUDRATE = 9600
+    IMAGE_WIDTH = 500
+    IMAGE_HEIGHT = 500
+    MAX_STEGO_BYTES = 8192
+
+# === HARDWARE INTERFACE ===
+class GPSSensor:
+    def __init__(self, port=Config.GPS_PORT, baudrate=Config.GPS_BAUDRATE):
+        self.port = port
+        self.baudrate = baudrate
+        self.serial_conn = None
+
+    def connect(self):
+        try:
+            self.serial_conn = serial.Serial(self.port, self.baudrate, timeout=5)
+            logger.info(f"Connected to GPS on {self.port}")
+            return True
+        except Exception as e:
+            logger.error(f"GPS connection failed: {e}")
+            return False
+
+    def get_coordinates(self):
+        if not self.serial_conn:
+            if not self.connect():
+                return None
+
+        try:
+            while True:
+                line = self.serial_conn.readline().decode('ascii', errors='replace').strip()
+                if line.startswith('$GPGGA'):
+                    msg = pynmea2.parse(line)
+                    return {
+                        "latitude": float(msg.latitude),
+                        "longitude": float(msg.longitude),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+        except Exception as e:
+            logger.error(f"GPS read error: {e}")
+            return None
+
+# === CRYPTOGRAPHY HANDLER ===
+class CryptoHandler:
+    @staticmethod
+    def generate_keys():
+        """Generate ECC and RSA key pairs"""
+        ecc_priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        ecc_pub = ecc_priv.public_key()
+        rsa_priv = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        rsa_pub = rsa_priv.public_key()
+        return ecc_priv, ecc_pub, rsa_priv, rsa_pub
+
+    @staticmethod
+    def compute_hash(data_bytes):
+        return sha256(data_bytes).digest()
+
+    @staticmethod
+    def sign_data(data_hash, ecc_priv):
+        return ecc_priv.sign(data_hash, ec.ECDSA(hashes.SHA256()))
+
+    @staticmethod
+    def verify_signature(data_hash, signature, ecc_pub):
+        try:
+            ecc_pub.verify(signature, data_hash, ec.ECDSA(hashes.SHA256()))
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def aes_gcm_encrypt(plaintext, key):
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(key)
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+        return nonce, ciphertext
+
+    @staticmethod
+    def aes_gcm_decrypt(nonce, ciphertext, key):
+        aesgcm = AESGCM(key)
+        return aesgcm.decrypt(nonce, ciphertext, None).decode('utf-8')
+
+    @staticmethod
+    def rsa_encrypt_key(aes_key, rsa_pub):
+        return rsa_pub.encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+    @staticmethod
+    def rsa_decrypt_key(enc_key, rsa_priv):
+        return rsa_priv.decrypt(
+            enc_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+# === STEGANOGRAPHY HANDLER ===
+class Steganography:
+    @staticmethod
+    def embed_data(data_b64, image_name="output.png"):
+        """Embed base64 data into an image using LSB steganography"""
+        try:
+            bits = ''.join(format(byte, '08b') for byte in data_b64.encode())
+            img_data = np.random.randint(0, 256, (Config.IMAGE_HEIGHT, Config.IMAGE_WIDTH, 3), dtype=np.uint8)
+            flat = img_data.flatten()
+
+            if len(bits) > len(flat):
+                raise ValueError("Data too large for image")
+
+            for i in range(len(bits)):
+                flat[i] = (flat[i] & 0xFE) | int(bits[i])
+
+            stego_img = flat.reshape((Config.IMAGE_HEIGHT, Config.IMAGE_WIDTH, 3))
+            Image.fromarray(stego_img).save(image_name)
+            return image_name
+        except Exception as e:
+            logger.error(f"Embedding failed: {e}")
+            return None
+
+    @staticmethod
+    def extract_data(image_path):
+        """Extract data from stego image"""
+        try:
+            img = np.array(Image.open(image_path))
+            flat = img.flatten()
+            bits = [str(flat[i] & 1) for i in range(min(len(flat), Config.MAX_STEGO_BYTES * 8))]
+            byte_data = bytearray(int(''.join(bits[i:i+8]), 2) for i in range(0, len(bits), 8))
+
+            try:
+                ascii_data = byte_data.decode('ascii')
+            except UnicodeDecodeError:
+                ascii_data = byte_data.decode('utf-8', errors='ignore')
+
+            match = re.search(r'eyJ.*?==', ascii_data)
+            if match:
+                return match.group().encode("ascii")
+            raise ValueError("No valid base64 payload found")
+        except Exception as e:
+            logger.error(f"Extraction failed: {e}")
+            return None
+
+# === MAIN SECURITY SYSTEM ===
+class SecuritySystem:
+    def __init__(self):
+        self.gps = GPSSensor()
+        self.crypto = CryptoHandler()
+        self.stego = Steganography()
+
+    def detect_anomaly(self, current_coords):
+        try:
+            distance = geodesic(
+                (current_coords["latitude"], current_coords["longitude"]),
+                Config.PRESIDENCY_UNIV_COORDS
+            ).kilometers
+            return int(distance > Config.ANOMALY_RADIUS_KM)
+        except Exception as e:
+            logger.error(f"Anomaly detection failed: {e}")
+            return 1
+
+    def upload_to_thingspeak(self, data):
+        url = "https://api.thingspeak.com/update"
+        payload = {
+            "api_key": Config.THINGSPEAK_API_KEY,
+            "field1": data.get("latitude", ""),
+            "field2": data.get("longitude", ""),
+            "field3": data.get("timestamp", ""),
+            "field4": data.get("sig_hash", ""),
+            "field5": data.get("img", ""),
+            "field6": str(round(data.get("encrypt_time", 0), 4)),
+            "field7": str(round(data.get("decrypt_time", 0), 4)),
+            "field8": str(data.get("anomaly_status", 0))
+        }
+
+        try:
+            response = requests.post(url, data=payload, timeout=10)
+            if response.status_code == 200 and response.text != '0':
+                logger.info(f"ThingSpeak update successful. Entry ID: {response.text}")
+            else:
+                logger.warning(f"ThingSpeak update failed. Response: {response.text}")
+        except Exception as e:
+            logger.error(f"ThingSpeak error: {e}")
+
+    def encrypt_and_embed(self):
+        logger.info("Starting encryption pipeline")
+        
+        # Generate cryptographic keys
+        ecc_priv, ecc_pub, rsa_priv, rsa_pub = self.crypto.generate_keys()
+
+        # Get GPS data
+        gps_data = self.gps.get_coordinates()
+        if not gps_data:
+            logger.error("Failed to get GPS data")
+            return None
+
+        gps_json = json.dumps(gps_data).encode()
+        digest = self.crypto.compute_hash(gps_json)
+        signature = self.crypto.sign_data(digest, ecc_priv)
+
+        bundle = {
+            "gps": gps_data,
+            "signature": base64.b64encode(signature).decode()
+        }
+
+        # Encrypt the data
+        aes_key = AESGCM.generate_key(bit_length=128)
+        payload = json.dumps(bundle)
+
+        start_encrypt_time = time.time()
+        nonce, ciphertext = self.crypto.aes_gcm_encrypt(payload, aes_key)
+        enc_key = self.crypto.rsa_encrypt_key(aes_key, rsa_pub)
+        encrypt_time_taken = time.time() - start_encrypt_time
+
+        package = {
+            "nonce": base64.b64encode(nonce).decode(),
+            "ciphertext": base64.b64encode(ciphertext).decode(),
+            "enc_key": base64.b64encode(enc_key).decode()
+        }
+
+        # Embed in image
+        final_b64 = base64.b64encode(json.dumps(package).encode()).decode()
+        img_path = self.stego.embed_data(final_b64, "secure_image.png")
+        
+        if not img_path:
+            logger.error("Failed to embed data in image")
+            return None
+
+        logger.info(f"Image successfully saved at: {img_path}")
+        return {
+            "img_path": img_path,
+            "rsa_priv": rsa_priv,
+            "ecc_pub": ecc_pub,
+            "encrypt_time": encrypt_time_taken,
+            "gps_data": gps_data,
+            "sig_hash": sha256(signature).hexdigest()
+        }
+
+    def extract_and_decrypt(self, img_path, rsa_priv, ecc_pub, encrypt_time, orig_gps, sig_hash):
+        logger.info("Starting decryption pipeline")
+        start_decrypt_time = time.time()
+
+        try:
+            # Extract from image
+            raw_bytes = self.stego.extract_data(img_path)
+            if not raw_bytes:
+                raise ValueError("No data extracted from image")
+
+            base64_data = raw_bytes.decode('ascii')
+            json_bytes = base64.b64decode(base64_data.encode('ascii'), validate=True)
+            package = json.loads(json_bytes.decode('utf-8'))
+
+            # Decrypt the data
+            nonce = base64.b64decode(package["nonce"])
+            ciphertext = base64.b64decode(package["ciphertext"])
+            enc_key = base64.b64decode(package["enc_key"])
+
+            aes_key = self.crypto.rsa_decrypt_key(enc_key, rsa_priv)
+            plain_json = self.crypto.aes_gcm_decrypt(nonce, ciphertext, aes_key)
+            data = json.loads(plain_json)
+
+            # Verify signature
+            gps_data = json.dumps(data["gps"]).encode()
+            received_sig = base64.b64decode(data["signature"])
+            hash_check = self.crypto.compute_hash(gps_data)
+
+            decrypt_time_taken = time.time() - start_decrypt_time
+            sig_valid = self.crypto.verify_signature(hash_check, received_sig, ecc_pub)
+
+            logger.info("\nDecryption Results:")
+            logger.info(f"Position Data: {data['gps']}")
+            logger.info(f"Signature Valid: {sig_valid}")
+            logger.info(f"Decryption Time: {decrypt_time_taken:.4f} seconds")
+            logger.info(f"Total Processing Time: {encrypt_time + decrypt_time_taken:.4f} seconds")
+
+            # Check for anomalies
+            anomaly_status = self.detect_anomaly(data["gps"])
+
+            # Upload to ThingSpeak
+            self.upload_to_thingspeak({
+                "latitude": data["gps"]["latitude"],
+                "longitude": data["gps"]["longitude"],
+                "timestamp": data["gps"]["timestamp"],
+                "sig_hash": sha256(received_sig).hexdigest(),
+                "img": img_path,
+                "encrypt_time": encrypt_time,
+                "decrypt_time": decrypt_time_taken,
+                "anomaly_status": anomaly_status
+            })
+
+        except Exception as e:
+            logger.error(f"Decryption failed: {e}")
+
+# === MAIN EXECUTION ===
+if __name__ == "__main__":
+    system = SecuritySystem()
+    
+    # Run encryption pipeline
+    result = system.encrypt_and_embed()
+    if result:
+        # Run decryption pipeline
+        system.extract_and_decrypt(
+            result["img_path"],
+            result["rsa_priv"],
+            result["ecc_pub"],
+            result["encrypt_time"],
+            result["gps_data"],
+            result["sig_hash"]
+        )

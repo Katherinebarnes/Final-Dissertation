@@ -1,0 +1,67 @@
+import serial
+import pynmea2
+import time
+import urllib.request
+from geopy.distance import geodesic
+
+# ThingSpeak setup
+API_KEY = 'E0T139HPHL0UR2SI'  # Replace with your ThingSpeak API Key
+BASE_URL = f'https://api.thingspeak.com/update?api_key={API_KEY}'
+
+# Correct geofence center: Presidency University, Bangalore
+SAFE_ZONE_CENTER = (13.1686, 77.5350)  # (latitude, longitude)
+SAFE_ZONE_RADIUS_KM = 2.0  # Radius of safe zone in kilometers
+
+# GPS serial port
+GPS_PORT = '/dev/ttyAMA0'
+
+# Parse $GPRMC sentence to extract GPS coordinates
+def parse_gprmc_data(line):
+    try:
+        msg = pynmea2.parse(line)
+        if msg.status == 'A':
+            lat = msg.latitude
+            lon = msg.longitude
+            return lat, lon
+    except pynmea2.ParseError:
+        pass
+    return None, None
+
+# Check if coordinates are within safe geofence
+def is_within_safe_zone(lat, lon):
+    user_loc = (lat, lon)
+    distance = geodesic(user_loc, SAFE_ZONE_CENTER).km
+    print(f"Distance from safe zone: {distance:.2f} km")
+    return distance <= SAFE_ZONE_RADIUS_KM
+
+# Upload data to ThingSpeak
+def upload_to_thingspeak(lat, lon, anomaly):
+    try:
+        final_url = f"{BASE_URL}&field1={lat}&field2={lon}&field3={int(anomaly)}"
+        urllib.request.urlopen(final_url)
+        print("Data uploaded to ThingSpeak.")
+    except Exception as e:
+        print("Upload error:", e)
+
+# Main function
+def main():
+    try:
+        gps_serial = serial.Serial(GPS_PORT, 9600, timeout=1)
+        time.sleep(2)  # Allow GPS to initialize
+        while True:
+            line = gps_serial.readline().decode(errors='ignore')
+            if line.startswith('$GPRMC'):
+                lat, lon = parse_gprmc_data(line)
+                if lat and lon:
+                    print(f"Latitude: {lat}, Longitude: {lon}")
+                    anomaly = not is_within_safe_zone(lat, lon)
+                    print("Status:", "SAFE" if not anomaly else "ANOMALY")
+                    upload_to_thingspeak(lat, lon, anomaly)
+                else:
+                    print("Invalid GPS fix")
+                time.sleep(15)  # Respect ThingSpeak 15-second limit
+    except Exception as e:
+        print("Serial error:", e)
+
+if __name__ == "__main__":
+    main()
