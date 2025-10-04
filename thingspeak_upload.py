@@ -18,7 +18,7 @@ GPIO.setup(switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(buzzer, GPIO.OUT)
 
 
-API_KEY = 'SKSUJ7JRQPTDBUUP'
+API_KEY = ' '
 BASE_URL = 'https://api.thingspeak.com/update?api_key=' + API_KEY
 
 # Upload data to ThingSpeak
