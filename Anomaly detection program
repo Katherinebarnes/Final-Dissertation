@@ -5,8 +5,8 @@ from onewire_temp import *
 import RPi.GPIO as GPIO
 
 # ThingSpeak Setup
-API_KEY = 'E0T139HPHL0UR2SI'  # Replace with your ThingSpeak API Key
-BASE_URL = 'https://api.thingspeak.com/update?api_key=' + API_KEY
+API_KEY = '< >'  # Replace with your ThingSpeak API Key
+BASE_URL = '< >' + API_KEY
 
 # GPIO Setup
 GPIO.setwarnings(False)
@@ -17,7 +17,7 @@ GPIO.setup(switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(buzzer, GPIO.OUT)
 
 # Geofencing Reference
-SAFE_CENTER = (13.1391, 77.6200)  # Presidency University
+SAFE_CENTER = (latitude, longitude)  University
 SAFE_RADIUS_KM = 2.0  # 2 km radius
 
 # Geofencing Check
