@@ -76,5 +76,5 @@ def predict_anomaly(latitude, longitude):
     return 1 if pred == -1 else 0
 
 # Example prediction
-test_lat, test_long = 13.1687, 77.5352
+test_lat, test_long = latitude , longitude # add exact coordinates
 print(f"Predicted anomaly status for ({test_lat}, {test_long}): {predict_anomaly(test_lat, test_long)}")
